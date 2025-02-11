@@ -18,7 +18,7 @@ data_option = st.sidebar.radio(
 )
 
 # --- Main App Title ---
-st.title("Prasun's Gold Price Prediction (India)")
+st.title("Prasun's Gold Price Prediction With Integrated GEN-AI (India)")
 
 # --- Date Input Widget ---
 selected_date = st.date_input("Select Date", value=pd.Timestamp.today())
