@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from xgboost import XGBRegressor
+import xgboost as xgb
+from xgboost.callback import TrainingCallback
 from sklearn.metrics import mean_absolute_error, r2_score
 from babel.numbers import format_currency
 
@@ -31,20 +32,11 @@ def get_data(end_date):
       Date, USD, EUR, JPY, GBP, CAD, ...
     Here we assume the USD column represents the gold price in USD per ounce.
     """
-    # Read the CSV file. 'thousands' handles numbers with commas.
     df = pd.read_csv('daily.csv', parse_dates=['Date'], thousands=',')
-    
-    # Rename the USD column to 'Close' to be compatible with the rest of the code.
     df.rename(columns={'USD': 'Close'}, inplace=True)
-    
-    # Convert the 'Close' column to numeric (this will turn non-numeric entries like "#N/A" into NaN).
     df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
     df.dropna(subset=['Close'], inplace=True)
-    
-    # Filter the dataframe to include only rows with Date <= selected end_date.
     df = df[df['Date'] <= pd.to_datetime(end_date)]
-    
-    # Return only the Date and Close columns (adjust if you need more columns)
     return df[['Date', 'Close']]
 
 # --- Data Preprocessing Function ---
@@ -56,7 +48,6 @@ def preprocess_data(df):
     df['Date'] = pd.to_datetime(df['Date'])
     df.sort_values('Date', inplace=True)
     df.set_index('Date', inplace=True)
-    # Create lag features (1 to 30 days) based on the 'Close' column.
     for i in range(1, 31):
         df[f'lag_{i}'] = df['Close'].shift(i)
     df.dropna(inplace=True)
@@ -64,27 +55,34 @@ def preprocess_data(df):
 
 # --- Synthetic Data Expansion Function ---
 def expand_features_dataset(df, expansion_factor=2):
-    """
-    Creates synthetic copies of the data by adding Gaussian noise to numeric features.
-    Returns a tuple: (expanded_dataset, synthetic_data_preview)
-    where synthetic_data_preview is one synthetic copy for UI preview.
-    """
-    synthetic_dfs = []
-    for _ in range(expansion_factor - 1):
+    synthetic_dfs = [df]
+    num_synthetic_copies = expansion_factor - 1
+    for _ in range(num_synthetic_copies):
         synthetic = df.copy()
         for col in synthetic.columns:
             if pd.api.types.is_numeric_dtype(synthetic[col]):
                 noise_std = 0.05 * synthetic[col].std()
                 synthetic[col] = synthetic[col] + np.random.normal(0, noise_std, size=len(synthetic))
         synthetic_dfs.append(synthetic)
-    
-    # Combine original data with synthetic copies.
-    expanded_df = pd.concat([df] + synthetic_dfs)
+    expanded_df = pd.concat(synthetic_dfs)
     expanded_df = expanded_df.sample(frac=1, random_state=42)  # Shuffle the data
-    
-    # Use the first synthetic copy as the preview (if available).
-    synthetic_preview = synthetic_dfs[0] if synthetic_dfs else None
-    return expanded_df, synthetic_preview
+    return expanded_df
+
+# --- Custom Callback for XGBoost Training ---
+class StreamlitProgressCallback(TrainingCallback):
+    def __init__(self, progress_bar, status, total_rounds, start_progress=60, end_progress=80):
+        self.progress_bar = progress_bar
+        self.status = status
+        self.total_rounds = total_rounds
+        self.start_progress = start_progress
+        self.end_progress = end_progress
+
+    def after_iteration(self, model, epoch, evals_log):
+        progress = (epoch + 1) / self.total_rounds
+        new_progress = self.start_progress + int(progress * (self.end_progress - self.start_progress))
+        self.progress_bar.progress(new_progress)
+        self.status.info(f"Step 4: Training the model... (iteration {epoch + 1}/{self.total_rounds})")
+        return False  # Continue training
 
 # --- Main Application ---
 if st.button("Predict"):
@@ -119,39 +117,56 @@ if st.button("Predict"):
             # Step 4: Data Expansion (if chosen)
             if data_option == "Expand Dataset with Generative AI":
                 status.info("Step 3: Expanding dataset with synthetic data...")
-                train_data, synthetic_preview = expand_features_dataset(train_data, expansion_factor=2)
-                # Display a preview of the synthetic data in the UI.
-                st.markdown("### Synthetic Data Preview")
-                st.dataframe(synthetic_preview.head(5))
+                train_data = expand_features_dataset(train_data, expansion_factor=2)
             else:
                 status.info("Step 3: Using original dataset...")
             progress_bar.progress(60)
 
-            # Step 5: Model Training
+            # Step 5: Model Training with Progress Updates using xgboost.train()
             status.info("Step 4: Training the model...")
+
             X_train = train_data.drop('Close', axis=1)
             y_train = train_data['Close']
             X_test = test_data.drop('Close', axis=1)
             y_test = test_data['Close']
 
-            model = XGBRegressor(
-                n_estimators=200,
-                learning_rate=0.05,
-                max_depth=5,
-                subsample=0.9,
-                colsample_bytree=0.7,
-                random_state=42
+            # Convert the training and testing data to DMatrix format.
+            dtrain = xgb.DMatrix(X_train, label=y_train)
+            dtest = xgb.DMatrix(X_test, label=y_test)
+
+            params = {
+                "objective": "reg:squarederror",
+                "learning_rate": 0.05,
+                "max_depth": 5,
+                "subsample": 0.9,
+                "colsample_bytree": 0.7,
+                "seed": 42
+            }
+            num_round = 200
+
+            # Create an instance of our custom callback.
+            progress_callback = StreamlitProgressCallback(progress_bar, status, total_rounds=num_round, start_progress=60, end_progress=80)
+
+            booster = xgb.train(
+                params,
+                dtrain,
+                num_boost_round=num_round,
+                evals=[(dtest, "test")],
+                callbacks=[progress_callback]
             )
-            model.fit(X_train, y_train)
-            y_pred = model.predict(X_test)
+
+            # Evaluate the model on the test set.
+            y_pred = booster.predict(dtest)
             mae = mean_absolute_error(y_test, y_pred)
             r2 = r2_score(y_test, y_pred)
             progress_bar.progress(80)
 
             # Step 6: Prediction using the latest available features.
             status.info("Step 5: Generating prediction...")
-            latest_features = original_processed_data.drop('Close', axis=1).iloc[-1].values.reshape(1, -1)
-            prediction_usd_per_ounce = model.predict(latest_features)[0]
+            # Use the DataFrame directly to preserve feature names.
+            latest_features = original_processed_data.drop('Close', axis=1).iloc[[-1]]
+            dlatest = xgb.DMatrix(latest_features)
+            prediction_usd_per_ounce = booster.predict(dlatest)[0]
             # Convert USD prediction to INR using the provided conversion rate and local premium factor.
             prediction_inr_per_ounce = prediction_usd_per_ounce * usd_to_inr * local_premium
             formatted_price_per_ounce = format_currency(round(prediction_inr_per_ounce, 2), 'INR', locale='en_IN')
