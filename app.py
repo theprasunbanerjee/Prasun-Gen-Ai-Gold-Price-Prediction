@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import yfinance as yf
 from xgboost import XGBRegressor
 from sklearn.metrics import mean_absolute_error, r2_score
 from babel.numbers import format_currency
@@ -23,14 +22,30 @@ st.title("Prasun's Gold Price Prediction With Integrated GEN-AI (India)")
 # --- Date Input Widget ---
 selected_date = st.date_input("Select Date", value=pd.Timestamp.today())
 
-# --- Data Download Function ---
+# --- Data Loading Function ---
 @st.cache_data
 def get_data(end_date):
-    """Fetch gold price data up to the specified end_date."""
-    data = yf.download('GC=F', start='2010-01-01', end=end_date)
-    if 'Close' not in data.columns:
-        return pd.DataFrame()
-    return data[['Close']].reset_index()
+    """
+    Load gold price data from a local CSV file ('daily.csv') up to the specified end_date.
+    The CSV file is expected to have the following headers (among others):
+      Date, USD, EUR, JPY, GBP, CAD, ...
+    Here we assume the USD column represents the gold price in USD per ounce.
+    """
+    # Read the CSV file. 'thousands' handles numbers with commas.
+    df = pd.read_csv('daily.csv', parse_dates=['Date'], thousands=',')
+    
+    # Rename the USD column to 'Close' to be compatible with the rest of the code.
+    df.rename(columns={'USD': 'Close'}, inplace=True)
+    
+    # Convert the 'Close' column to numeric (this will turn non-numeric entries like "#N/A" into NaN).
+    df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
+    df.dropna(subset=['Close'], inplace=True)
+    
+    # Filter the dataframe to include only rows with Date <= selected end_date.
+    df = df[df['Date'] <= pd.to_datetime(end_date)]
+    
+    # Return only the Date and Close columns (adjust if you need more columns)
+    return df[['Date', 'Close']]
 
 # --- Data Preprocessing Function ---
 def preprocess_data(df):
@@ -41,6 +56,7 @@ def preprocess_data(df):
     df['Date'] = pd.to_datetime(df['Date'])
     df.sort_values('Date', inplace=True)
     df.set_index('Date', inplace=True)
+    # Create lag features (1 to 30 days) based on the 'Close' column.
     for i in range(1, 31):
         df[f'lag_{i}'] = df['Close'].shift(i)
     df.dropna(inplace=True)
@@ -48,27 +64,38 @@ def preprocess_data(df):
 
 # --- Synthetic Data Expansion Function ---
 def expand_features_dataset(df, expansion_factor=2):
-    synthetic_dfs = [df]
-    num_synthetic_copies = expansion_factor - 1
-    for _ in range(num_synthetic_copies):
+    """
+    Creates synthetic copies of the data by adding Gaussian noise to numeric features.
+    Returns a tuple: (expanded_dataset, synthetic_data_preview)
+    where synthetic_data_preview is one synthetic copy for UI preview.
+    """
+    synthetic_dfs = []
+    for _ in range(expansion_factor - 1):
         synthetic = df.copy()
         for col in synthetic.columns:
             if pd.api.types.is_numeric_dtype(synthetic[col]):
                 noise_std = 0.05 * synthetic[col].std()
                 synthetic[col] = synthetic[col] + np.random.normal(0, noise_std, size=len(synthetic))
         synthetic_dfs.append(synthetic)
-    expanded_df = pd.concat(synthetic_dfs)
-    expanded_df = expanded_df.sample(frac=1, random_state=42)
-    return expanded_df
+    
+    # Combine original data with synthetic copies.
+    expanded_df = pd.concat([df] + synthetic_dfs)
+    expanded_df = expanded_df.sample(frac=1, random_state=42)  # Shuffle the data
+    
+    # Use the first synthetic copy as the preview (if available).
+    synthetic_preview = synthetic_dfs[0] if synthetic_dfs else None
+    return expanded_df, synthetic_preview
 
 # --- Main Application ---
 if st.button("Predict"):
     status = st.empty()
     progress_bar = st.progress(0)
+    
+    # Format the selected date to a string (YYYY-MM-DD)
     end_date = pd.to_datetime(selected_date).strftime('%Y-%m-%d')
 
-    # Step 1: Fetching Data
-    status.info("Step 1: Fetching data...")
+    # Step 1: Load Data from CSV
+    status.info("Step 1: Loading data from daily.csv...")
     raw_data = get_data(end_date)
     progress_bar.progress(20)
     
@@ -89,10 +116,13 @@ if st.button("Predict"):
             train_data = original_processed_data.iloc[:train_size]
             test_data = original_processed_data.iloc[train_size:]
 
-            # Step 4: Data Expansion
+            # Step 4: Data Expansion (if chosen)
             if data_option == "Expand Dataset with Generative AI":
                 status.info("Step 3: Expanding dataset with synthetic data...")
-                train_data = expand_features_dataset(train_data, expansion_factor=2)
+                train_data, synthetic_preview = expand_features_dataset(train_data, expansion_factor=2)
+                # Display a preview of the synthetic data in the UI.
+                st.markdown("### Synthetic Data Preview")
+                st.dataframe(synthetic_preview.head(5))
             else:
                 status.info("Step 3: Using original dataset...")
             progress_bar.progress(60)
@@ -118,10 +148,11 @@ if st.button("Predict"):
             r2 = r2_score(y_test, y_pred)
             progress_bar.progress(80)
 
-            # Step 6: Prediction
+            # Step 6: Prediction using the latest available features.
             status.info("Step 5: Generating prediction...")
             latest_features = original_processed_data.drop('Close', axis=1).iloc[-1].values.reshape(1, -1)
             prediction_usd_per_ounce = model.predict(latest_features)[0]
+            # Convert USD prediction to INR using the provided conversion rate and local premium factor.
             prediction_inr_per_ounce = prediction_usd_per_ounce * usd_to_inr * local_premium
             formatted_price_per_ounce = format_currency(round(prediction_inr_per_ounce, 2), 'INR', locale='en_IN')
             progress_bar.progress(100)
