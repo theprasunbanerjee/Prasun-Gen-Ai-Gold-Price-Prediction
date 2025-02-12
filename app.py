@@ -6,12 +6,22 @@ from xgboost.callback import TrainingCallback
 from sklearn.metrics import mean_absolute_error, r2_score
 from babel.numbers import format_currency
 
-# --- Sidebar Configuration ---
+# --- Sidebar: Dataset Source Options ---
+st.sidebar.header("Dataset Options")
+dataset_source = st.sidebar.radio(
+    "Select Dataset Source",
+    ("Default (daily.csv)", "Upload your own dataset")
+)
+uploaded_file = None
+if dataset_source == "Upload your own dataset":
+    uploaded_file = st.sidebar.file_uploader("Upload CSV file", type=["csv"])
+
+# --- Sidebar: Gold Price Predictor Settings ---
 st.sidebar.header("Gold Price Predictor Settings")
 usd_to_inr = st.sidebar.number_input("USD to INR Conversion Rate", min_value=1.0, value=80.0, step=0.5)
 local_premium = st.sidebar.number_input("Local Premium Factor", min_value=1.0, value=1.57, step=0.1)
 
-# Choose data source option
+# --- Sidebar: Data Expansion Option ---
 data_option = st.sidebar.radio(
     "Select Data Option", 
     ("Use Original Data", "Expand Dataset with Generative AI")
@@ -20,20 +30,34 @@ data_option = st.sidebar.radio(
 # --- Main App Title ---
 st.title("Prasun's Gold Price Prediction With Integrated GEN-AI (India)")
 
+# --- Example Dataset Preview ---
+with st.expander("Example Dataset Preview (daily.csv)", expanded=False):
+    try:
+        @st.cache_data
+        def get_daily_preview():
+            df = pd.read_csv('daily.csv', parse_dates=['Date'], thousands=',')
+            # Rename USD to Close if applicable
+            if "USD" in df.columns and "Close" not in df.columns:
+                df.rename(columns={'USD': 'Close'}, inplace=True)
+            return df.head(3)
+        preview_df = get_daily_preview()
+        st.write(preview_df)
+    except Exception as e:
+        st.warning("Could not load daily.csv for preview.")
+
 # --- Date Input Widget ---
 selected_date = st.date_input("Select Date", value=pd.Timestamp.today())
 
-# --- Data Loading Function ---
+# --- Data Loading Function for Default Dataset ---
 @st.cache_data
 def get_data(end_date):
     """
     Load gold price data from a local CSV file ('daily.csv') up to the specified end_date.
-    The CSV file is expected to have the following headers (among others):
-      Date, USD, EUR, JPY, GBP, CAD, ...
-    Here we assume the USD column represents the gold price in USD per ounce.
+    The CSV file is expected to have a 'Date' column and a 'USD' column (which is renamed to 'Close').
     """
     df = pd.read_csv('daily.csv', parse_dates=['Date'], thousands=',')
-    df.rename(columns={'USD': 'Close'}, inplace=True)
+    if "USD" in df.columns and "Close" not in df.columns:
+        df.rename(columns={'USD': 'Close'}, inplace=True)
     df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
     df.dropna(subset=['Close'], inplace=True)
     df = df[df['Date'] <= pd.to_datetime(end_date)]
@@ -92,9 +116,27 @@ if st.button("Predict"):
     # Format the selected date to a string (YYYY-MM-DD)
     end_date = pd.to_datetime(selected_date).strftime('%Y-%m-%d')
 
-    # Step 1: Load Data from CSV
-    status.info("Step 1: Loading data from daily.csv...")
-    raw_data = get_data(end_date)
+    # Step 1: Load Data
+    status.info("Step 1: Loading data...")
+    if dataset_source == "Upload your own dataset":
+        if uploaded_file is None:
+            st.error("Please upload a CSV file.")
+            st.stop()
+        else:
+            try:
+                raw_data = pd.read_csv(uploaded_file, parse_dates=['Date'], thousands=',')
+            except Exception as e:
+                st.error("Error reading the uploaded CSV file.")
+                st.stop()
+            # If the CSV has a 'USD' column instead of 'Close', rename it.
+            if "USD" in raw_data.columns and "Close" not in raw_data.columns:
+                raw_data.rename(columns={'USD': 'Close'}, inplace=True)
+            raw_data['Close'] = pd.to_numeric(raw_data['Close'], errors='coerce')
+            raw_data.dropna(subset=['Close'], inplace=True)
+            raw_data = raw_data[raw_data['Date'] <= pd.to_datetime(end_date)]
+            raw_data = raw_data[['Date', 'Close']]
+    else:
+        raw_data = get_data(end_date)
     progress_bar.progress(20)
     
     if raw_data.empty:
