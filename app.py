@@ -10,7 +10,7 @@ from babel.numbers import format_currency
 st.sidebar.header("Dataset Options")
 dataset_source = st.sidebar.radio(
     "Select Dataset Source",
-    ("Default (daily.csv)", "Upload your own dataset")
+    ("Default (gld_price_data.csv)", "Upload your own dataset")
 )
 uploaded_file = None
 if dataset_source == "Upload your own dataset":
@@ -31,19 +31,19 @@ data_option = st.sidebar.radio(
 st.title("Prasun's Gold Price Prediction With Integrated GEN-AI (India)")
 
 # --- Example Dataset Preview ---
-with st.expander("Example Dataset Preview (daily.csv)", expanded=False):
+with st.expander("Example Dataset Preview (gld_price_data.csv)", expanded=False):
     try:
         @st.cache_data
-        def get_daily_preview():
-            df = pd.read_csv('daily.csv', parse_dates=['Date'], thousands=',')
-            # Rename USD to Close if applicable
-            if "USD" in df.columns and "Close" not in df.columns:
-                df.rename(columns={'USD': 'Close'}, inplace=True)
+        def get_gld_preview():
+            df = pd.read_csv('gld_price_data.csv', parse_dates=['Date'])
+            # Rename 'GLD' to 'Close' if needed.
+            if "GLD" in df.columns and "Close" not in df.columns:
+                df.rename(columns={'GLD': 'Close'}, inplace=True)
             return df.head(3)
-        preview_df = get_daily_preview()
+        preview_df = get_gld_preview()
         st.write(preview_df)
     except Exception as e:
-        st.warning("Could not load daily.csv for preview.")
+        st.warning("Could not load gld_price_data.csv for preview.")
 
 # --- Date Input Widget ---
 selected_date = st.date_input("Select Date", value=pd.Timestamp.today())
@@ -52,12 +52,12 @@ selected_date = st.date_input("Select Date", value=pd.Timestamp.today())
 @st.cache_data
 def get_data(end_date):
     """
-    Load gold price data from a local CSV file ('daily.csv') up to the specified end_date.
-    The CSV file is expected to have a 'Date' column and a 'USD' column (which is renamed to 'Close').
+    Load gold price data from a local CSV file ('gld_price_data.csv') up to the specified end_date.
+    The CSV file is expected to have a 'Date' column and a 'GLD' column (which is renamed to 'Close').
     """
-    df = pd.read_csv('daily.csv', parse_dates=['Date'], thousands=',')
-    if "USD" in df.columns and "Close" not in df.columns:
-        df.rename(columns={'USD': 'Close'}, inplace=True)
+    df = pd.read_csv('gld_price_data.csv', parse_dates=['Date'])
+    if "GLD" in df.columns and "Close" not in df.columns:
+        df.rename(columns={'GLD': 'Close'}, inplace=True)
     df['Close'] = pd.to_numeric(df['Close'], errors='coerce')
     df.dropna(subset=['Close'], inplace=True)
     df = df[df['Date'] <= pd.to_datetime(end_date)]
@@ -124,13 +124,13 @@ if st.button("Predict"):
             st.stop()
         else:
             try:
-                raw_data = pd.read_csv(uploaded_file, parse_dates=['Date'], thousands=',')
+                raw_data = pd.read_csv(uploaded_file, parse_dates=['Date'])
             except Exception as e:
                 st.error("Error reading the uploaded CSV file.")
                 st.stop()
-            # If the CSV has a 'USD' column instead of 'Close', rename it.
-            if "USD" in raw_data.columns and "Close" not in raw_data.columns:
-                raw_data.rename(columns={'USD': 'Close'}, inplace=True)
+            # If the CSV has a 'GLD' column instead of 'Close', rename it.
+            if "GLD" in raw_data.columns and "Close" not in raw_data.columns:
+                raw_data.rename(columns={'GLD': 'Close'}, inplace=True)
             raw_data['Close'] = pd.to_numeric(raw_data['Close'], errors='coerce')
             raw_data.dropna(subset=['Close'], inplace=True)
             raw_data = raw_data[raw_data['Date'] <= pd.to_datetime(end_date)]
@@ -160,6 +160,9 @@ if st.button("Predict"):
             if data_option == "Expand Dataset with Generative AI":
                 status.info("Step 3: Expanding dataset with synthetic data...")
                 train_data = expand_features_dataset(train_data, expansion_factor=2)
+                # Show preview of the expanded (synthetic) dataset
+                with st.expander("Preview of Expanded (Synthetic) Data", expanded=True):
+                    st.dataframe(train_data.head(5))
             else:
                 status.info("Step 3: Using original dataset...")
             progress_bar.progress(60)
