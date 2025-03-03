@@ -28,7 +28,7 @@ data_option = st.sidebar.radio(
 )
 
 # --- Main App Title ---
-st.title("Prasun's Gold Price Prediction With Integrated GEN-AI (India)")
+st.title("Group 3 Gold Price Prediction With Integrated GEN-AI (India)")
 
 # --- Example Dataset Preview ---
 with st.expander("Example Dataset Preview (gld_price_data.csv)", expanded=False):
